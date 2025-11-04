@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { useEffect } from "react";
-import { javascript } from "@codemirror/lang-javascript";
+import { python } from "@codemirror/lang-python";
 
 const CodeMirror = dynamic(() => import("@uiw/react-codemirror"), { ssr: false });
 
@@ -13,7 +13,7 @@ type Props = {
 
 export default function Editor({ value, onChange }: Props) {
   useEffect(() => {
-    if (!value) onChange(`// Write your solution here (JS/TS)\n// e.g. function solve(input) { /* ... */ }\n`);
+    if (!value) onChange(`# Write your solution here (Python)\n# e.g. def solve(input):\n#     pass\n`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -24,7 +24,7 @@ export default function Editor({ value, onChange }: Props) {
         <CodeMirror
           value={value}
           height="70vh"
-          extensions={[javascript({ jsx: true, typescript: true })]}
+          extensions={[python()]}
           onChange={(v) => onChange(v)}
         />
       </div>

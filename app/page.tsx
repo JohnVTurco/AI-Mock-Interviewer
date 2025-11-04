@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import VoiceService, { VoiceServiceRef } from "@/components/VoiceService";
 
 function fmt(sec) {
   const m = Math.floor(sec / 60);
@@ -14,8 +15,8 @@ const COMPANIES = [
 ];
 
 const LANGUAGES = [
-  { value: "javascript", label: "JavaScript" },
   { value: "python", label: "Python" },
+  { value: "javascript", label: "JavaScript" },
   { value: "java", label: "Java" },
   { value: "cpp", label: "C++" },
   { value: "csharp", label: "C#" },
@@ -26,22 +27,27 @@ const LANGUAGES = [
 export default function Home() {
   const [company, setCompany] = useState("");
   const [showCompanyMenu, setShowCompanyMenu] = useState(false);
-  const [language, setLanguage] = useState("javascript");
+  const [language, setLanguage] = useState("python");
   const [minutes, setMinutes] = useState(45);
   const [timeLeft, setTimeLeft] = useState(45 * 60);
   const [running, setRunning] = useState(false);
 
   const [question, setQuestion] = useState("");
-  const [code, setCode] = useState("// Write your solution here...");
+  const [code, setCode] = useState("# Write your solution here...");
   const [evaluation, setEvaluation] = useState("");
 
   const [loadingQ, setLoadingQ] = useState(false);
   const [loadingEval, setLoadingEval] = useState(false);
 
+  const [isVoiceListening, setIsVoiceListening] = useState(false);
+  const [voiceTranscript, setVoiceTranscript] = useState("");
+  const [showVoiceHelp, setShowVoiceHelp] = useState(false);
+
   const timerRef = useRef(null);
   const menuRef = useRef(null);
   const editorRef = useRef(null);
   const aceEditorRef = useRef(null);
+  const voiceServiceRef = useRef<VoiceServiceRef>(null);
 
   // Load Ace Editor
   useEffect(() => {
@@ -52,7 +58,7 @@ export default function Home() {
       if (editorRef.current && window.ace) {
         const editor = window.ace.edit(editorRef.current);
         editor.setTheme("ace/theme/monokai");
-        editor.session.setMode(`ace/mode/${language}`);
+        editor.session.setMode("ace/mode/python");
         editor.setOptions({
           fontSize: "14px",
           showPrintMargin: false,
@@ -78,7 +84,18 @@ export default function Home() {
   // Update language mode
   useEffect(() => {
     if (aceEditorRef.current) {
-      aceEditorRef.current.session.setMode(`ace/mode/${language}`);
+      // Map language values to ace modes
+      const modeMap: Record<string, string> = {
+        javascript: "javascript",
+        python: "python",
+        java: "java",
+        cpp: "c_cpp",
+        csharp: "csharp",
+        go: "golang",
+        rust: "rust"
+      };
+      const mode = modeMap[language] || "python";
+      aceEditorRef.current.session.setMode(`ace/mode/${mode}`);
     }
   }, [language]);
 
@@ -117,6 +134,58 @@ export default function Home() {
     setTimeLeft(Math.max(1, mins) * 60);
   };
 
+  const handleVoiceTranscription = (text: string) => {
+    setVoiceTranscript(text);
+
+    // Process voice commands
+    const lowerText = text.toLowerCase();
+
+    if (lowerText.includes('start timer') || lowerText.includes('begin timer')) {
+      setRunning(true);
+      voiceServiceRef.current?.speak("Timer started. Good luck with your solution!");
+    } else if (lowerText.includes('pause timer') || lowerText.includes('stop timer')) {
+      setRunning(false);
+      voiceServiceRef.current?.speak("Timer paused.");
+    } else if (lowerText.includes('reset timer')) {
+      resetTimer(minutes);
+      voiceServiceRef.current?.speak("Timer reset.");
+    } else if (lowerText.includes('evaluate solution') || lowerText.includes('evaluate my solution')) {
+      if (question.trim() && code.trim()) {
+        handleEvaluate();
+        voiceServiceRef.current?.speak("Let me evaluate your solution.");
+      } else {
+        voiceServiceRef.current?.speak("I need both a question and your code to evaluate the solution.");
+      }
+    } else if (lowerText.includes('interview for') || lowerText.includes('company is')) {
+      // Extract company name from voice input
+      const match = text.match(/(?:interview for|company is)\s+([a-zA-Z]+)/i);
+      if (match && match[1]) {
+        setCompany(match[1]);
+        voiceServiceRef.current?.speak(`Set target company to ${match[1]}. Ready to generate a question?`);
+      }
+    } else if (lowerText.includes('generate question') || lowerText.includes('new question')) {
+      if (company.trim()) {
+        handleGenerate();
+      } else {
+        voiceServiceRef.current?.speak("Please specify a company first.");
+      }
+    }
+  };
+
+  const toggleVoiceCall = () => {
+    if (voiceServiceRef.current?.isConnected) {
+      voiceServiceRef.current.endCall();
+    } else {
+      voiceServiceRef.current?.startCall();
+    }
+  };
+
+  const speakQuestion = () => {
+    if (question && voiceServiceRef.current) {
+      voiceServiceRef.current.speak(`Here's your interview question: ${question}`);
+    }
+  };
+
   const handleGenerate = async () => {
     if (!company.trim()) return;
     setEvaluation("");
@@ -131,8 +200,21 @@ export default function Home() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to generate");
       setQuestion(data.question);
+      if (data.starterCode) {
+        setCode(data.starterCode);
+        if (aceEditorRef.current) {
+          aceEditorRef.current.setValue(data.starterCode, -1);
+        }
+      }
       resetTimer(minutes);
       setRunning(true);
+
+      // Automatically speak the question if voice interview is active
+      if (voiceServiceRef.current?.isConnected) {
+        setTimeout(() => {
+          voiceServiceRef.current?.speak(`Here's your interview question: ${data.question}`);
+        }, 500);
+      }
     } catch (e) {
       setQuestion(`Error: ${e?.message ?? e}`);
     } finally {
@@ -153,6 +235,18 @@ export default function Home() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to evaluate");
       setEvaluation(data.evaluation);
+
+      // Provide voice feedback if voice interview is active
+      if (voiceServiceRef.current?.isConnected) {
+        // Extract key points from evaluation for voice summary
+        const evaluation = data.evaluation;
+        const lines = evaluation.split('\n').filter((line: string) => line.trim());
+        const summary = lines.slice(0, 3).join(' ').substring(0, 200) + '...';
+
+        setTimeout(() => {
+          voiceServiceRef.current?.speak(`I've evaluated your solution. ${summary} You can see the full details on screen.`);
+        }, 500);
+      }
     } catch (e) {
       setEvaluation(`Error: ${e?.message ?? e}`);
     } finally {
@@ -171,21 +265,82 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
+      {/* Voice Service */}
+      <VoiceService
+        ref={voiceServiceRef}
+        onTranscription={handleVoiceTranscription}
+        onSpeechStart={() => setIsVoiceListening(true)}
+        onSpeechEnd={() => setIsVoiceListening(false)}
+        onError={(error) => console.error('Voice error:', error)}
+        currentCode={code}
+        currentQuestion={question}
+        company={company}
+      />
+
       {/* Header */}
       <header className="bg-white/80 backdrop-blur-sm border-b border-gray-200 sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-6 py-4">
-          <div className="flex items-center gap-3">
-            <svg className="w-8 h-8 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
-            </svg>
-            <h1 className="text-2xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
-              Welcome to KevinLiu.AI
-            </h1>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <svg className="w-8 h-8 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+              </svg>
+              <h1 className="text-2xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
+                Welcome to KevinLiu.AI
+              </h1>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={toggleVoiceCall}
+                className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                  voiceServiceRef.current?.isConnected
+                    ? 'bg-red-100 text-red-700 hover:bg-red-200'
+                    : 'bg-green-100 text-green-700 hover:bg-green-200'
+                }`}
+              >
+                {voiceServiceRef.current?.isConnected ? '🔴 End Interview' : '🎤 Start Voice Interview'}
+              </button>
+              <button
+                onClick={() => setShowVoiceHelp(!showVoiceHelp)}
+                className="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200"
+                title="Voice Commands Help"
+              >
+                ❓
+              </button>
+            </div>
           </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-6 py-8">
+        {/* Voice Help Section */}
+        {showVoiceHelp && (
+          <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+            <h3 className="font-semibold text-blue-800 mb-2">Voice Commands:</h3>
+            <ul className="text-sm text-blue-700 space-y-1">
+              <li>• "Interview for [Company]" - Set target company</li>
+              <li>• "Generate question" - Create new interview question</li>
+              <li>• "Start timer" / "Pause timer" / "Reset timer" - Timer controls</li>
+              <li>• "Evaluate solution" - Get AI feedback on your code</li>
+              <li>• Ask the AI interviewer questions about your approach</li>
+              <li>• Explain your solution out loud for real-time feedback</li>
+            </ul>
+          </div>
+        )}
+
+        {/* Voice Listening Indicator */}
+        {isVoiceListening && (
+          <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg">
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
+              <span className="text-green-700 font-medium">Listening...</span>
+              {voiceTranscript && (
+                <span className="text-green-600 ml-2">"{voiceTranscript}"</span>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Top Controls */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
           <div className="flex flex-wrap items-center gap-4">
@@ -282,12 +437,23 @@ export default function Home() {
           <div className="space-y-4">
             {/* Interview Question */}
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
-              <h2 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-                <svg className="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                Interview Question
-              </h2>
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="font-semibold text-gray-900 flex items-center gap-2">
+                  <svg className="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  Interview Question
+                </h2>
+                {question && (
+                  <button
+                    onClick={speakQuestion}
+                    className="px-3 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors"
+                    title="Read question aloud"
+                  >
+                    🔊 Speak
+                  </button>
+                )}
+              </div>
               <div className="h-[120px] overflow-y-auto p-3 bg-gradient-to-r from-indigo-50 to-purple-50 rounded-lg border border-indigo-200">
                 {question ? (
                   <div className="text-gray-800 whitespace-pre-wrap">{question}</div>
