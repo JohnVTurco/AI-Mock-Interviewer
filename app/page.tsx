@@ -43,6 +43,16 @@ export default function Home() {
   const [voiceTranscript, setVoiceTranscript] = useState("");
   const [showVoiceHelp, setShowVoiceHelp] = useState(false);
 
+  const [resumeFile, setResumeFile] = useState<File | null>(null);
+  const [resumeReview, setResumeReview] = useState("");
+  const [loadingResume, setLoadingResume] = useState(false);
+  const [showResumeSection, setShowResumeSection] = useState(false);
+
+  const [interviewStartTime, setInterviewStartTime] = useState<number | null>(null);
+  const [interviewFeedback, setInterviewFeedback] = useState("");
+  const [loadingFeedback, setLoadingFeedback] = useState(false);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+
   const timerRef = useRef(null);
   const menuRef = useRef(null);
   const editorRef = useRef(null);
@@ -209,6 +219,9 @@ export default function Home() {
       resetTimer(minutes);
       setRunning(true);
 
+      // Track interview start time
+      setInterviewStartTime(Date.now());
+
       // Automatically speak the question if voice interview is active
       if (voiceServiceRef.current?.isConnected) {
         setTimeout(() => {
@@ -254,6 +267,83 @@ export default function Home() {
     }
   };
 
+  const handleResumeUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setResumeFile(file);
+    setLoadingResume(true);
+    setResumeReview("");
+
+    try {
+      const text = await file.text();
+
+      const res = await fetch("/api/review-resume", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resumeText: text }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to review resume");
+
+      setResumeReview(data.review);
+      setShowResumeSection(true);
+    } catch (e: any) {
+      setResumeReview(`Error: ${e?.message ?? e}`);
+    } finally {
+      setLoadingResume(false);
+    }
+  };
+
+  const handleEndInterview = async () => {
+    if (!question.trim() || !code.trim()) {
+      alert("Please complete the interview question first!");
+      return;
+    }
+
+    setLoadingFeedback(true);
+    setInterviewFeedback("");
+
+    try {
+      // Calculate time spent
+      const timeSpent = interviewStartTime
+        ? Math.floor((Date.now() - interviewStartTime) / 1000)
+        : timeLeft > 0 ? (minutes * 60) - timeLeft : minutes * 60;
+
+      const res = await fetch("/api/interview-feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          company,
+          question,
+          code,
+          evaluation,
+          timeSpent
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to get feedback");
+
+      setInterviewFeedback(data.feedback);
+      setShowFeedbackModal(true);
+
+      // Stop the timer
+      setRunning(false);
+
+      // Provide voice feedback if voice interview is active
+      if (voiceServiceRef.current?.isConnected) {
+        voiceServiceRef.current?.speak("I've generated your complete interview feedback. You can review the detailed analysis on screen.");
+      }
+    } catch (e: any) {
+      setInterviewFeedback(`Error: ${e?.message ?? e}`);
+      setShowFeedbackModal(true);
+    } finally {
+      setLoadingFeedback(false);
+    }
+  };
+
   useEffect(() => {
     if (!running && timeLeft === Math.max(1, minutes) * 60) {
       setTimeLeft(Math.max(1, minutes) * 60);
@@ -265,6 +355,55 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
+      {/* Feedback Modal */}
+      {showFeedbackModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white p-6 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <h2 className="text-2xl font-bold">Interview Complete!</h2>
+              </div>
+              <button
+                onClick={() => setShowFeedbackModal(false)}
+                className="text-white hover:bg-white/20 rounded-lg p-2 transition-colors"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto flex-1">
+              {loadingFeedback ? (
+                <div className="flex flex-col items-center justify-center py-12">
+                  <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-indigo-600 mb-4"></div>
+                  <p className="text-gray-600 text-lg">Generating your comprehensive feedback...</p>
+                </div>
+              ) : (
+                <div className="prose prose-indigo max-w-none">
+                  <div className="whitespace-pre-wrap text-gray-800">{interviewFeedback}</div>
+                </div>
+              )}
+            </div>
+
+            <div className="bg-gray-50 px-6 py-4 flex items-center justify-between border-t border-gray-200">
+              <p className="text-sm text-gray-600">
+                Great job completing the interview! Review the feedback to improve.
+              </p>
+              <button
+                onClick={() => setShowFeedbackModal(false)}
+                className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Voice Service */}
       <VoiceService
         ref={voiceServiceRef}
@@ -291,6 +430,13 @@ export default function Home() {
             </div>
             <div className="flex items-center gap-3">
               <button
+                onClick={handleEndInterview}
+                disabled={loadingFeedback || !question.trim() || !code.trim()}
+                className="px-4 py-2 rounded-lg font-medium transition-colors bg-gradient-to-r from-green-600 to-teal-600 text-white hover:from-green-700 hover:to-teal-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+              >
+                🏁 End Interview
+              </button>
+              <button
                 onClick={toggleVoiceCall}
                 className={`px-4 py-2 rounded-lg font-medium transition-colors ${
                   voiceServiceRef.current?.isConnected
@@ -298,7 +444,7 @@ export default function Home() {
                     : 'bg-green-100 text-green-700 hover:bg-green-200'
                 }`}
               >
-                {voiceServiceRef.current?.isConnected ? '🔴 End Interview' : '🎤 Start Voice Interview'}
+                {voiceServiceRef.current?.isConnected ? '🔴 End Voice' : '🎤 Voice Interview'}
               </button>
               <button
                 onClick={() => setShowVoiceHelp(!showVoiceHelp)}
@@ -340,6 +486,52 @@ export default function Home() {
             </div>
           </div>
         )}
+
+        {/* Resume Review Section */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="font-semibold text-gray-900 flex items-center gap-2">
+              <svg className="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              Resume Review
+            </h2>
+            <button
+              onClick={() => setShowResumeSection(!showResumeSection)}
+              className="text-sm text-indigo-600 hover:text-indigo-700"
+            >
+              {showResumeSection ? "Hide" : "Show"}
+            </button>
+          </div>
+
+          {showResumeSection && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-4">
+                <label className="flex-1">
+                  <input
+                    type="file"
+                    accept=".txt,.pdf,.doc,.docx"
+                    onChange={handleResumeUpload}
+                    className="block w-full text-sm text-gray-600 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+                    disabled={loadingResume}
+                  />
+                </label>
+              </div>
+
+              {loadingResume && (
+                <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                  <p className="text-blue-700">Analyzing your resume...</p>
+                </div>
+              )}
+
+              {resumeReview && (
+                <div className="p-4 bg-gradient-to-br from-gray-50 to-purple-50 rounded-lg border border-gray-200 max-h-96 overflow-y-auto">
+                  <div className="text-gray-800 whitespace-pre-wrap text-sm">{resumeReview}</div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         {/* Top Controls */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
